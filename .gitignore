@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Data & generated artifacts ---
+data/luna16/
+data/drr_pairs/
+data/**/*.npz
+data/**/*.npy
+data/**/*.nii
+data/**/*.nii.gz
+data/**/*.mhd
+data/**/*.raw
+
+# --- Training outputs ---
+results/
+logs/
+*.pt
+*.pth
+*.ckpt
+
+# --- Streamlit ---
+.streamlit/
+# data artifacts
+data/*.tcia
