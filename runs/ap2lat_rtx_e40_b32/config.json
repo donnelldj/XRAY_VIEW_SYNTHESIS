@@ -1,0 +1,12 @@
+{
+  "drr_dir": "data/drr_pairs/npz",
+  "out_dir": "runs/ap2lat_rtx_e40_b32",
+  "epochs": 40,
+  "batch_size": 1,
+  "lr": 0.0001,
+  "base": 32,
+  "seed": 0,
+  "test_frac": 0.33,
+  "w_ct": 0.2,
+  "w_lat": 1.0
+}
