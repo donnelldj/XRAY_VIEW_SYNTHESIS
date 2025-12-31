@@ -1,130 +1,170 @@
 # scripts/viz_ap_lat_triplets.py
-# Save side-by-side AP / Pred LAT / GT LAT PNGs for inspection & report.
+# Visualize AP -> LAT prediction triplets from an ap2lat checkpoint (best.pt / last.pt)
 
-import os
-import json
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
-
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
-
-from src.data_drr_pairs import DRRPairsDataset
-from src.models.unet3d_min import UNet3DMin
-from src.projection_simple import forward_project_lat_from_ct
+import torch.nn as nn
+from PIL import Image
 
 
-def seed_everything(seed: int = 0):
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def _to_uint8(img01: np.ndarray) -> np.ndarray:
+    img01 = np.clip(img01, 0.0, 1.0)
+    return (img01 * 255.0).round().astype(np.uint8)
 
 
-def split_indices(n, test_frac=0.33, seed=0):
-    import random
-    idx = list(range(n))
-    rng = random.Random(seed)
-    rng.shuffle(idx)
-    n_test = max(1, int(n * test_frac))
-    test_idx = idx[:n_test]
-    train_idx = idx[n_test:]
-    return train_idx, test_idx
+def _save_png(img01: np.ndarray, out_path: Path):
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(_to_uint8(img01)).save(out_path)
 
 
-def to_numpy(img_t: torch.Tensor) -> np.ndarray:
+def _stack_triplet(ap01: np.ndarray, gt01: np.ndarray, pr01: np.ndarray) -> np.ndarray:
+    # AP | GT | PRED
+    return np.concatenate([ap01, gt01, pr01], axis=1)
+
+
+def _norm01(x: np.ndarray) -> np.ndarray:
+    x = x.astype(np.float32)
+    mn = float(x.min())
+    mx = float(x.max())
+    return (x - mn) / (mx - mn + 1e-8)
+
+
+def load_state_dict_any(ckpt_path: str, device: str) -> dict:
+    ckpt = torch.load(ckpt_path, map_location=device)
+    if isinstance(ckpt, dict) and "model" in ckpt and isinstance(ckpt["model"], dict):
+        return ckpt["model"]
+    if isinstance(ckpt, dict):
+        for k in ("state_dict", "net", "weights"):
+            if k in ckpt and isinstance(ckpt[k], dict):
+                return ckpt[k]
+        return ckpt
+    raise ValueError(f"Unsupported checkpoint format: {type(ckpt)}")
+
+
+def infer_base(sd: dict) -> int:
+    w = sd.get("enc1.0.weight", None)  # (base, 1, 3, 3)
+    if w is None:
+        raise SystemExit("[ERROR] Could not find enc1.0.weight in checkpoint.")
+    return int(w.shape[0])
+
+
+def _double_conv_gn(in_ch: int, out_ch: int, groups: int = 8) -> nn.Sequential:
+    g = min(groups, out_ch)
+    # MUST be flat Sequential so keys match:
+    #   enc1.0, enc1.1, enc1.2, enc1.3, enc1.4, enc1.5
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, 3, padding=1),  # 0
+        nn.GroupNorm(g, out_ch),                 # 1
+        nn.ReLU(inplace=True),                   # 2
+        nn.Conv2d(out_ch, out_ch, 3, padding=1), # 3
+        nn.GroupNorm(g, out_ch),                 # 4
+        nn.ReLU(inplace=True),                   # 5
+    )
+
+
+class Ap2LatUNet2D_GN(nn.Module):
     """
-    img_t: (C,H,W) or (1,H,W) or (H,W) tensor -> normalized float32 numpy [0,1]
+    Matches checkpoint keys:
+      enc1.*, enc2.*, bott.*, dec2.*, dec1.*, up1.*, up2.*, out.*
     """
-    x = img_t.detach().cpu().float()
-    if x.ndim == 3 and x.shape[0] == 1:
-        x = x[0]          # (H,W)
-    x = x.numpy()
-    x = x - x.min()
-    x = x / (x.max() + 1e-8)
-    return x
+    def __init__(self, base: int = 32):
+        super().__init__()
+        b = base
+
+        self.enc1 = _double_conv_gn(1, b)
+        self.pool1 = nn.MaxPool2d(2)
+
+        self.enc2 = _double_conv_gn(b, 2 * b)
+        self.pool2 = nn.MaxPool2d(2)
+
+        self.bott = _double_conv_gn(2 * b, 4 * b)
+
+        self.up2 = nn.ConvTranspose2d(4 * b, 2 * b, kernel_size=2, stride=2)
+        self.dec2 = _double_conv_gn(4 * b, 2 * b)
+
+        self.up1 = nn.ConvTranspose2d(2 * b, b, kernel_size=2, stride=2)
+        self.dec1 = _double_conv_gn(2 * b, b)
+
+        self.out = nn.Conv2d(b, 1, kernel_size=1)
+
+    def forward(self, x):
+        e1 = self.enc1(x)
+        p1 = self.pool1(e1)
+
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
+
+        bt = self.bott(p2)
+
+        u2 = self.up2(bt)
+        d2 = self.dec2(torch.cat([u2, e2], dim=1))
+
+        u1 = self.up1(d2)
+        d1 = self.dec1(torch.cat([u1, e1], dim=1))
+
+        return self.out(d1)
 
 
 def main():
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", default="runs/ap2lat_baseline/ckpt_best.pt")
-    parser.add_argument("--out_dir", default="runs/ap2lat_baseline/viz_triplets")
-    parser.add_argument("--num", type=int, default=10, help="how many triplets to dump")
-    args = parser.parse_args()
-
-    ckpt_path = Path(args.ckpt).resolve()
-    run_dir = ckpt_path.parent
-
-    # Load training config so we use the same data split
-    cfg_path = run_dir / "config.json"
-    with open(cfg_path, "r") as f:
-        cfg = json.load(f)
-
-    drr_dir = cfg.get("drr_dir", "data/drr_pairs/npz")
-    seed = cfg.get("seed", 0)
-    test_frac = cfg.get("test_frac", 0.33)
-    base = cfg.get("base", 16)
-
-    seed_everything(seed)
-
-    # Dataset + test split (same logic as training)
-    ds = DRRPairsDataset(drr_dir)
-    _, test_idx = split_indices(len(ds), test_frac=test_frac, seed=seed)
-    test_ds = Subset(ds, test_idx)
-    test_dl = DataLoader(test_ds, batch_size=1, shuffle=False)
+    p = argparse.ArgumentParser()
+    p.add_argument("--ckpt", required=True, help="Path to ap2lat best.pt / last.pt / ckpt_best.pt")
+    p.add_argument("--npz_dir", default="data/drp_pairs/npz")
+    p.add_argument("--out_dir", default="runs/ap2lat_viz_triplets")
+    p.add_argument("--n", type=int, default=12)
+    p.add_argument("--seed", type=int, default=0)
+    args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("device:", device, flush=True)
+    out_dir = Path(args.out_dir)
+    (out_dir / "examples").mkdir(parents=True, exist_ok=True)
+    (out_dir / "viz_triplets").mkdir(parents=True, exist_ok=True)
 
-    model = UNet3DMin(base=base).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(ckpt["model"])
+    npz_paths = sorted(Path(args.npz_dir).glob("*.npz"))
+    if not npz_paths:
+        raise SystemExit(f"[ERROR] No npz found in: {args.npz_dir}")
+
+    rng = np.random.default_rng(args.seed)
+    if args.n < len(npz_paths):
+        pick = rng.choice(len(npz_paths), size=args.n, replace=False)
+        npz_paths = [npz_paths[i] for i in sorted(pick)]
+
+    sd = load_state_dict_any(args.ckpt, device=device)
+    base = infer_base(sd)
+
+    model = Ap2LatUNet2D_GN(base=base).to(device)
+    model.load_state_dict(sd, strict=True)
     model.eval()
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print("saving PNGs to:", out_dir, flush=True)
-
-    # Headless matplotlib backend so this works from CLI
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
+    wrote = 0
     with torch.no_grad():
-        for i, batch in enumerate(test_dl):
-            if i >= args.num:
-                break
+        for i, npz_path in enumerate(npz_paths):
+            d = np.load(npz_path)
+            if "ap" not in d.files or "lat" not in d.files:
+                continue
 
-            ap = batch["ap"].to(device)      # (1,1,H,W)
-            bp = batch["bp"].to(device)      # (1,1,Z,H,W)
-            lat_gt = batch["lat"].to(device) # (1,1,H,W)
+            ap = d["ap"].astype(np.float32)
+            lat_gt = d["lat"].astype(np.float32)
 
-            ct_pred = model(bp)
-            lat_pred = forward_project_lat_from_ct(ct_pred)
+            ap01 = _norm01(ap)
+            gt01 = _norm01(lat_gt)
 
-            ap_np = to_numpy(ap[0])         # (H,W)
-            lat_pred_np = to_numpy(lat_pred[0])
-            lat_gt_np = to_numpy(lat_gt[0])
+            ap_t = torch.from_numpy(ap01)[None, None].to(device)
+            lat_pred = model(ap_t)[0, 0].detach().cpu().numpy()
+            pr01 = _norm01(lat_pred)
 
-            fig, axes = plt.subplots(1, 3, figsize=(9, 3))
-            axes[0].imshow(ap_np, cmap="gray")
-            axes[0].set_title("AP input")
-            axes[1].imshow(lat_pred_np, cmap="gray")
-            axes[1].set_title("Pred LAT")
-            axes[2].imshow(lat_gt_np, cmap="gray")
-            axes[2].set_title("GT LAT")
-            for ax in axes:
-                ax.axis("off")
-            fig.tight_layout()
+            _save_png(ap01, out_dir / "examples" / f"{i:03d}_ap.png")
+            _save_png(gt01, out_dir / "examples" / f"{i:03d}_lat_gt.png")
+            _save_png(pr01, out_dir / "examples" / f"{i:03d}_lat_pred.png")
 
-            out_path = out_dir / f"triplet_{i:03d}.png"
-            fig.savefig(out_path, dpi=150)
-            plt.close(fig)
+            trip = _stack_triplet(ap01, gt01, pr01)
+            _save_png(trip, out_dir / "viz_triplets" / f"triplet_{i:03d}.png")
+            wrote += 1
 
-            print(f"wrote {out_path}", flush=True)
+    print(f"[OK] base={base} wrote={wrote} -> {out_dir}")
 
 
 if __name__ == "__main__":
