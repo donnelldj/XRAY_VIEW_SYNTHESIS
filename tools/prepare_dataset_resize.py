@@ -82,7 +82,7 @@ def safe_filename(case_id: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selected_json", type=str, default="data/selected_200.json")
+    ap.add_argument("--selected_json", type=str, default="data/selected_10.json")
     ap.add_argument("--out_dir", type=str, required=True)
 
     # Target RESIZE volume shape (Z,Y,X) expressed as args (X,Y,Z) for SITK

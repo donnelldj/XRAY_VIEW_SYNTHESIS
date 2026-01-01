@@ -41,7 +41,7 @@ def show_one(npz_path: str):
     plt.show()
 
 def main():
-    npzs = glob.glob("runs/drr_debug/npz/*.npz") 
+    npzs = glob.glob("runs/run_2025_12_31/data/drr_pairs/npz/*.npz") 
     if not npzs:
         raise SystemExit("No npz files found. Check your out_dir.")
     p = random.choice(npzs)
