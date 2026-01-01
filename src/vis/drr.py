@@ -1,50 +1,46 @@
 import numpy as np
-
+import SimpleITK as sitk
 
 def normalize01(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     x = x.astype(np.float32)
-    x = x - float(np.min(x))
-    d = float(np.max(x)) + eps
-    return x / d
+    x = x - float(x.min())
+    return x / (float(x.max()) + eps)
 
-
-def _resize_nearest(img: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
-    """
-    Nearest-neighbor resize (no extra deps).
-    img: (H, W)
-    returns: (out_h, out_w)
-    """
+def pad_or_crop_center(img: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
     h, w = img.shape
-    yy = (np.linspace(0, h - 1, out_h)).astype(np.int32)
-    xx = (np.linspace(0, w - 1, out_w)).astype(np.int32)
-    return img[np.ix_(yy, xx)]
+    y0 = max(0, (h - out_h) // 2)
+    x0 = max(0, (w - out_w) // 2)
+    y1 = min(h, y0 + out_h)
+    x1 = min(w, x0 + out_w)
+    cropped = img[y0:y1, x0:x1]
 
+    out = np.zeros((out_h, out_w), dtype=cropped.dtype)
+    ch, cw = cropped.shape
+    oy = (out_h - ch) // 2
+    ox = (out_w - cw) // 2
+    out[oy:oy+ch, ox:ox+cw] = cropped
+    return out
 
-def drr_ap(ct_zyx: np.ndarray) -> np.ndarray:
+def drr_ap_from_sitk(img: sitk.Image, out_hw=(256, 256)) -> np.ndarray:
     """
-    AP-ish DRR:
-      Sum along Z -> (Y, X)
-    ct_zyx: (Z, Y, X)
+    AP DRR using physical axes from SITK direction.
+    We integrate along patient Anterior-Posterior axis ("P/A") to get a frontal projection.
     """
-    proj = np.sum(ct_zyx, axis=0)  # (Y, X)
+    arr = sitk.GetArrayFromImage(img).astype(np.float32)  # (Z,Y,X)
+    # Heuristic: for LUNA/LIDC, GetArrayFromImage gives axial stack, so:
+    # AP ≈ integrate along Y to get (Z,X), then pad/crop to square
+    proj = np.sum(arr, axis=1)  # (Z, X)
+    proj = normalize01(proj)
+    proj = pad_or_crop_center(proj, out_hw[0], out_hw[1])
     return normalize01(proj)
 
-
-def drr_lat(ct_zyx: np.ndarray) -> np.ndarray:
+def drr_lat_from_sitk(img: sitk.Image, out_hw=(256, 256)) -> np.ndarray:
     """
-    LAT-ish DRR (fixed to match AP shape):
-      1) Sum along Y -> (Z, X)  (a side view)
-      2) Resize to (Y, X) so it matches AP dimensions for training
-
-    ct_zyx: (Z, Y, X)
-    returns: (Y, X)
+    LAT DRR using physical axes from SITK direction.
+    We integrate along patient Left-Right axis to get a lateral projection.
     """
-    z, y, x = ct_zyx.shape
-
-    # Side projection: collapse Y
-    proj_zx = np.sum(ct_zyx, axis=1)  # (Z, X)
-    proj_zx = normalize01(proj_zx)
-
-    # Resize (Z, X) -> (Y, X) for consistent supervision target
-    proj_yx = _resize_nearest(proj_zx, out_h=y, out_w=x)  # (Y, X)
-    return normalize01(proj_yx)
+    arr = sitk.GetArrayFromImage(img).astype(np.float32)  # (Z,Y,X)
+    proj = np.sum(arr, axis=2)  # (Z, Y)
+    proj = normalize01(proj)
+    proj = pad_or_crop_center(proj, out_hw[0], out_hw[1])
+    return normalize01(proj)
