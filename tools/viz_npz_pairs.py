@@ -60,7 +60,7 @@ def show_one(npz_path: str, save_dir: Path):
 
 
 def main():
-    npzs = glob.glob("runs/runs_final/data/drr_pairs_fixed/npz/*.npz")
+    npzs = glob.glob("runs/runs_final/data/drr_pairs_fixed/npz/subset0__1.3.6.1.4.1.14519.5.2.1.6279.6001.105756658031515062000744821260.npz")
     if not npzs:
         raise SystemExit("No npz files found. Check your out_dir.")
 

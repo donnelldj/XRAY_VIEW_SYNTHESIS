@@ -1,0 +1,22 @@
+{
+  "npz_dir": "runs\\runs_final\\data\\drr_pairs_fixed\\npz",
+  "run_dir": "runs\\ap2lat_final",
+  "epochs": 40,
+  "batch_size": 2,
+  "lr": 0.0002,
+  "seed": 1337,
+  "num_workers": 2,
+  "device": "cuda",
+  "vol_dhw": [
+    256,
+    256,
+    256
+  ],
+  "img_hw": [
+    256,
+    256
+  ],
+  "val_frac": 0.1,
+  "export_n": 12,
+  "base_channels": 16
+}
