@@ -18,12 +18,6 @@ import pandas as pd
 import SimpleITK as sitk
 
 from src.vis.drr import drr_ap, drr_lat
-import importlib
-import src.vis.drr as drr_mod
-print("[DEBUG] drr_mod file:", drr_mod.__file__)
-print("[DEBUG] has drr_ap_from_sitk:", hasattr(drr_mod, "drr_ap_from_sitk"))
-print("[DEBUG] attrs:", [a for a in dir(drr_mod) if "drr_" in a])
-
 
 
 @dataclass(frozen=True)
@@ -88,7 +82,7 @@ def safe_filename(case_id: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selected_json", type=str, default="data/selected_10.json")
+    ap.add_argument("--selected_json", type=str, default="data/selected_200.json")
     ap.add_argument("--out_dir", type=str, required=True)
 
     # Target RESIZE volume shape (Z,Y,X) expressed as args (X,Y,Z) for SITK
@@ -135,18 +129,11 @@ def main():
         img = read_ct_sitk(str(mhd_path))
         img_rs = resample_to_size(img, out_size_xyz=target_xyz)
 
-        # normalize *after* array extraction for saving ct_zyx
-        ct_zyx, spacing_zyx = sitk_to_np_zyx(img_rs)
+        ct_zyx, spacing_zyx = sitk_to_np_zyx(img_rs)  # (Z,Y,X)
         ct_norm = normalize_ct_hu(ct_zyx, args.hu_min, args.hu_max)
 
-        # DRRs computed from SITK image (direction-aware)
-        # IMPORTANT: use a normalized copy for DRR to keep intensity stable
-        img_norm = sitk.GetImageFromArray(ct_norm)  # (Z,Y,X)
-        img_norm.CopyInformation(img_rs)
-
-        ap_img  = drr_ap_from_sitk(img_norm).astype(np.float32)
-        lat_img = drr_lat_from_sitk(img_norm).astype(np.float32)
-
+        ap_img = drr_ap(ct_norm).astype(np.float32)
+        lat_img = drr_lat(ct_norm).astype(np.float32)
 
         fn = safe_filename(c.case_id) + ".npz"
         npz_path = out_npz / fn
