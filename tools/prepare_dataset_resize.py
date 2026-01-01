@@ -85,10 +85,15 @@ def main():
     ap.add_argument("--selected_json", type=str, default="data/selected_10.json")
     ap.add_argument("--out_dir", type=str, required=True)
 
-    # Target RESIZE volume shape (Z,Y,X) expressed as args (X,Y,Z) for SITK
-    ap.add_argument("--size_x", type=int, default=256)
-    ap.add_argument("--size_y", type=int, default=256)
-    ap.add_argument("--size_z", type=int, default=96)
+    # AP sizing
+    ap.add_argument("--ap_size_x", type=int, default=256)
+    ap.add_argument("--ap_size_y", type=int, default=256)
+    ap.add_argument("--ap_size_z", type=int, default=96)
+
+    # LAT sizing
+    ap.add_argument("--lat_size_x", type=int, default=96)
+    ap.add_argument("--lat_size_y", type=int, default=256)
+    ap.add_argument("--lat_size_z", type=int, default=256)
 
     ap.add_argument("--hu_min", type=float, default=-1000.0)
     ap.add_argument("--hu_max", type=float, default=400.0)

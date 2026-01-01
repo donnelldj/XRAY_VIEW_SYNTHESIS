@@ -1,50 +1,101 @@
+# src/vis/drr.py
+from __future__ import annotations
+
 import numpy as np
 
 
-def normalize01(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+def _normalize01(x: np.ndarray) -> np.ndarray:
     x = x.astype(np.float32)
     x = x - float(np.min(x))
-    d = float(np.max(x)) + eps
-    return x / d
+    x = x / (float(np.max(x)) + 1e-8)
+    return x
 
 
-def _resize_nearest(img: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
+def _maybe_invert(x01: np.ndarray, invert: bool) -> np.ndarray:
+    return (1.0 - x01) if invert else x01
+
+
+def _apply_orient(x: np.ndarray, rot_k: int = 0, flip_ud: bool = False, flip_lr: bool = False) -> np.ndarray:
     """
-    Nearest-neighbor resize (no extra deps).
-    img: (H, W)
-    returns: (out_h, out_w)
+    Apply display/orientation transforms in one place.
+    rot_k: rotate by 90 degrees k times (counter-clockwise), k in {0,1,2,3}
     """
-    h, w = img.shape
-    yy = (np.linspace(0, h - 1, out_h)).astype(np.int32)
-    xx = (np.linspace(0, w - 1, out_w)).astype(np.int32)
-    return img[np.ix_(yy, xx)]
+    if rot_k % 4:
+        x = np.rot90(x, k=rot_k)
+    if flip_ud:
+        x = np.flipud(x)
+    if flip_lr:
+        x = np.fliplr(x)
+    return x
 
 
-def drr_ap(ct_zyx: np.ndarray) -> np.ndarray:
+def drr_ap(
+    ct_zyx: np.ndarray,
+    *,
+    invert: bool = True,
+    rot_k: int = 0,
+    flip_ud: bool = False,
+    flip_lr: bool = False,
+) -> np.ndarray:
     """
-    AP-ish DRR:
-      Sum along Z -> (Y, X)
-    ct_zyx: (Z, Y, X)
+    Create an AP-like DRR from a CT volume.
+
+    Input:
+      ct_zyx: numpy array shaped (Z, Y, X)
+        Z: superior-inferior (head->feet)
+        Y: anterior-posterior
+        X: left-right
+
+    AP projection integrates along Y, producing image plane (Z, X).
     """
-    proj = np.sum(ct_zyx, axis=0)  # (Y, X)
-    return normalize01(proj)
+    ct = ct_zyx.astype(np.float32)
+    img = ct.sum(axis=1)          # (Z, X)
+    img01 = _normalize01(img)
+    img01 = _maybe_invert(img01, invert)
+    img01 = _apply_orient(img01, rot_k=rot_k, flip_ud=flip_ud, flip_lr=flip_lr)
+    return img01.astype(np.float32)
 
 
-def drr_lat(ct_zyx: np.ndarray) -> np.ndarray:
+def drr_lat(
+    ct_zyx: np.ndarray,
+    *,
+    invert: bool = True,
+    rot_k: int = 0,
+    flip_ud: bool = False,
+    flip_lr: bool = False,
+) -> np.ndarray:
     """
-    LAT-ish DRR (fixed to match AP shape):
-      1) Sum along Y -> (Z, X)  (a side view)
-      2) Resize to (Y, X) so it matches AP dimensions for training
+    Create a LAT-like DRR from a CT volume.
 
-    ct_zyx: (Z, Y, X)
-    returns: (Y, X)
+    Input:
+      ct_zyx: numpy array shaped (Z, Y, X)
+
+    LAT projection integrates along X, producing image plane (Z, Y).
     """
-    z, y, x = ct_zyx.shape
+    ct = ct_zyx.astype(np.float32)
+    img = ct.sum(axis=2)          # (Z, Y)
+    img01 = _normalize01(img)
+    img01 = _maybe_invert(img01, invert)
+    img01 = _apply_orient(img01, rot_k=rot_k, flip_ud=flip_ud, flip_lr=flip_lr)
+    return img01.astype(np.float32)
 
-    # Side projection: collapse Y
-    proj_zx = np.sum(ct_zyx, axis=1)  # (Z, X)
-    proj_zx = normalize01(proj_zx)
 
-    # Resize (Z, X) -> (Y, X) for consistent supervision target
-    proj_yx = _resize_nearest(proj_zx, out_h=y, out_w=x)  # (Y, X)
-    return normalize01(proj_yx)
+def drr_from_ct(
+    ct_zyx: np.ndarray,
+    view: str,
+    *,
+    invert: bool = True,
+    rot_k: int = 0,
+    flip_ud: bool = False,
+    flip_lr: bool = False,
+) -> np.ndarray:
+    """
+    Convenience wrapper.
+    view: "ap" or "lat"
+    """
+    v = view.lower().strip()
+    if v == "ap":
+        return drr_ap(ct_zyx, invert=invert, rot_k=rot_k, flip_ud=flip_ud, flip_lr=flip_lr)
+    if v == "lat":
+        return drr_lat(ct_zyx, invert=invert, rot_k=rot_k, flip_ud=flip_ud, flip_lr=flip_lr)
+    raise ValueError(f"view must be 'ap' or 'lat', got: {view!r}")
