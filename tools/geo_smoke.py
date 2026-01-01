@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # tools/geo_smoke.py
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -13,8 +15,51 @@ from src.geo.backproject import backproject_parallel_beam
 # Your repo has these
 try:
     from src.projection import project_lat
-except Exception as e:
+except Exception:
     project_lat = None
+# src/geo/backproject.py
+
+
+
+
+def backproject_parallel_beam(ap_2d: np.ndarray, out_zyx: tuple[int, int, int], axis: int = 0) -> np.ndarray:
+    """
+    Simple parallel-beam backprojection baseline: "smear" a 2D projection back into a 3D volume.
+
+    out_zyx: desired output volume shape (Z,Y,X)
+    axis:
+      0 -> assumes ap_2d is (Y,X) and represents sum over Z (classic AP in older code)
+           vol[z,y,x] = ap_2d[y,x]
+      1 -> assumes ap_2d is (Z,X) and represents sum over Y (your new AP convention)
+           vol[z,y,x] = ap_2d[z,x]
+      2 -> assumes ap_2d is (Z,Y) and represents sum over X
+           vol[z,y,x] = ap_2d[z,y]
+    """
+    ap = ap_2d.astype(np.float32)
+    Z, Y, X = [int(v) for v in out_zyx]
+
+    if axis == 0:
+        # ap: (Y,X) -> tile across Z
+        if ap.shape != (Y, X):
+            raise ValueError(f"axis=0 expects ap shape (Y,X)=({Y},{X}), got {ap.shape}")
+        vol = np.broadcast_to(ap[None, :, :], (Z, Y, X)).copy()
+        return vol.astype(np.float32)
+
+    if axis == 1:
+        # ap: (Z,X) -> tile across Y
+        if ap.shape != (Z, X):
+            raise ValueError(f"axis=1 expects ap shape (Z,X)=({Z},{X}), got {ap.shape}")
+        vol = np.broadcast_to(ap[:, None, :], (Z, Y, X)).copy()
+        return vol.astype(np.float32)
+
+    if axis == 2:
+        # ap: (Z,Y) -> tile across X
+        if ap.shape != (Z, Y):
+            raise ValueError(f"axis=2 expects ap shape (Z,Y)=({Z},{Y}), got {ap.shape}")
+        vol = np.broadcast_to(ap[:, :, None], (Z, Y, X)).copy()
+        return vol.astype(np.float32)
+
+    raise ValueError(f"axis must be 0, 1, or 2. Got {axis}")
 
 
 def minmax01(img: np.ndarray) -> np.ndarray:
@@ -28,16 +73,16 @@ def minmax01(img: np.ndarray) -> np.ndarray:
 def forward_project_fallback(vol_zyx: np.ndarray, view: str) -> np.ndarray:
     """
     vol_zyx: (Z,Y,X)
-    Parallel-beam DRR baseline:
-      AP  = sum over Z -> (Y,X)
-      LAT = sum over X -> (Z,Y) then transpose -> (Y,Z)
+
+    IMPORTANT: This matches your NEW dataset convention from src/vis/drr.py:
+      AP  = integrate along Y -> (Z,X)
+      LAT = integrate along X -> (Z,Y)
     """
     view = view.upper()
     if view == "AP":
-        return vol_zyx.sum(axis=0).astype(np.float32)  # (Y,X)
+        return vol_zyx.sum(axis=1).astype(np.float32)  # (Z,X)
     if view == "LAT":
-        lat_zy = vol_zyx.sum(axis=2).astype(np.float32)  # (Z,Y)
-        return lat_zy  # (Z,Y) caller can transpose if they want (Y,Z)
+        return vol_zyx.sum(axis=2).astype(np.float32)  # (Z,Y)
     raise ValueError("view must be 'AP' or 'LAT'")
 
 
@@ -45,59 +90,70 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--npz", required=True, help="Path to one .npz containing keys: ap, lat")
     p.add_argument("--show", action="store_true")
+    p.add_argument("--y_size", type=int, default=None,
+                   help="Optional Y size for backprojection volume. Defaults to lat.shape[1].")
     args = p.parse_args()
 
     npz = np.load(args.npz, allow_pickle=True)
     if "ap" not in npz.files or "lat" not in npz.files:
         raise ValueError(f"NPZ missing ap/lat. Keys: {npz.files}")
 
-    ap_img = npz["ap"].astype(np.float32)      # (Y,X)
-    lat_gt = npz["lat"].astype(np.float32)     # expected (Y,Z) in your dataset
+    # NEW dataset convention:
+    # ap:  (Z,X)
+    # lat: (Z,Y)
+    ap_img = npz["ap"].astype(np.float32)
+    lat_gt_zy = npz["lat"].astype(np.float32)
 
-    if ap_img.ndim != 2 or lat_gt.ndim != 2:
-        raise ValueError(f"Expected ap/lat as 2D arrays. Got ap={ap_img.shape}, lat={lat_gt.shape}")
+    if ap_img.ndim != 2 or lat_gt_zy.ndim != 2:
+        raise ValueError(f"Expected ap/lat as 2D arrays. Got ap={ap_img.shape}, lat={lat_gt_zy.shape}")
 
-    y, x = ap_img.shape
-    z = lat_gt.shape[1]  # treat GT LAT width as Z
+    z_ap, x_ap = ap_img.shape
+    z_lat, y_lat = lat_gt_zy.shape
 
-    # 1) backproject AP -> volume (Z,Y,X)
-    vol = backproject_parallel_beam(ap_img, out_zyx=(z, y, x), axis=0)
+    if z_ap != z_lat:
+        # If these disagree, something upstream is inconsistent
+        raise ValueError(f"Z mismatch: ap(Z,X)={ap_img.shape} vs lat(Z,Y)={lat_gt_zy.shape}")
 
-    # 2) forward project -> LAT using your function if available
+    z = z_ap
+    x = x_ap
+    y = args.y_size if args.y_size is not None else y_lat
+
+    # 1) backproject AP (Z,X) into volume (Z,Y,X) by "smearing" along Y
+    #    axis=1 corresponds to the Y dimension in (Z,Y,X)
+    vol = backproject_parallel_beam(ap_img, out_zyx=(z, y, x), axis=1)
+
+    # 2) forward project -> LAT (Z,Y)
     if project_lat is not None:
-        # your project_lat sums axis=2 => (Z,Y)
-        lat_pred_zy = project_lat(vol).astype(np.float32)  # (Z,Y)
+        lat_pred_zy = project_lat(vol).astype(np.float32)  # expected (Z,Y)
     else:
         lat_pred_zy = forward_project_fallback(vol, "LAT")  # (Z,Y)
 
-    # convert to (Y,Z) to match GT
-    lat_pred_yz = lat_pred_zy.T  # (Y,Z)
+    # 3) crop to match GT exactly (Z,Y)
+    zz = min(lat_pred_zy.shape[0], lat_gt_zy.shape[0])
+    yy = min(lat_pred_zy.shape[1], lat_gt_zy.shape[1])
+    lat_pred_zy = lat_pred_zy[:zz, :yy]
+    lat_gt_zy = lat_gt_zy[:zz, :yy]
 
-    # crop to match exactly
-    yy = min(lat_pred_yz.shape[0], lat_gt.shape[0])
-    zz = min(lat_pred_yz.shape[1], lat_gt.shape[1])
-    lat_pred_yz = lat_pred_yz[:yy, :zz]
-    lat_gt_yz = lat_gt[:yy, :zz]
-
-    # normalize both consistently so diff is interpretable
-    lat_pred_n = minmax01(lat_pred_yz)
-    lat_gt_n = minmax01(lat_gt_yz)
+    # normalize for interpretable diff
+    ap_n = minmax01(ap_img)
+    lat_pred_n = minmax01(lat_pred_zy)
+    lat_gt_n = minmax01(lat_gt_zy)
 
     diff = np.abs(lat_pred_n - lat_gt_n)
-
     mae = float(diff.mean())
     mse = float((diff ** 2).mean())
 
-    print(f"AP: {ap_img.shape}  VOL: {vol.shape}  LAT_GT: {lat_gt.shape}  LAT_PRED: {lat_pred_yz.shape}")
+    print(f"AP: {ap_img.shape}  VOL: {vol.shape}  LAT_GT(Z,Y): {lat_gt_zy.shape}  LAT_PRED(Z,Y): {lat_pred_zy.shape}")
     print(f"MAE: {mae:.6f}  MSE: {mse:.6f}")
     print(f"npz: {args.npz}")
 
     if args.show:
         fig, ax = plt.subplots(1, 4, figsize=(16, 4))
-        ax[0].imshow(minmax01(ap_img), cmap="gray"); ax[0].set_title("AP (input)")
-        ax[1].imshow(lat_gt_n, cmap="gray"); ax[1].set_title("LAT (GT) [norm]")
-        ax[2].imshow(lat_pred_n, cmap="gray"); ax[2].set_title("LAT (geometry) [norm]")
-        ax[3].imshow(diff, cmap="magma"); ax[3].set_title("|diff|")
+        ax[0].imshow(np.flipud(ap_n), cmap="gray")
+        ax[1].imshow(np.flipud(lat_gt_n), cmap="gray")
+        ax[2].imshow(np.flipud(lat_pred_n), cmap="gray")
+        ax[3].imshow(np.flipud(diff), cmap="magma")
+
         for a in ax:
             a.axis("off")
         plt.tight_layout()

@@ -1,4 +1,3 @@
-# src/vis/drr.py
 from __future__ import annotations
 
 import numpy as np
@@ -15,13 +14,21 @@ def _maybe_invert(x01: np.ndarray, invert: bool) -> np.ndarray:
     return (1.0 - x01) if invert else x01
 
 
-def _apply_orient(x: np.ndarray, rot_k: int = 0, flip_ud: bool = False, flip_lr: bool = False) -> np.ndarray:
+def _apply_orient(
+    x: np.ndarray,
+    rot_k: int = 0,
+    flip_ud: bool = False,
+    flip_lr: bool = False,
+) -> np.ndarray:
     """
-    Apply display/orientation transforms in one place.
+    OPTIONAL display/orientation transforms.
+    Keep defaults as no-ops for dataset correctness.
+
     rot_k: rotate by 90 degrees k times (counter-clockwise), k in {0,1,2,3}
     """
-    if rot_k % 4:
-        x = np.rot90(x, k=rot_k)
+    k = int(rot_k) % 4
+    if k:
+        x = np.rot90(x, k=k)
     if flip_ud:
         x = np.flipud(x)
     if flip_lr:
@@ -38,18 +45,18 @@ def drr_ap(
     flip_lr: bool = False,
 ) -> np.ndarray:
     """
-    Create an AP-like DRR from a CT volume.
+    AP-like DRR from CT volume.
 
     Input:
-      ct_zyx: numpy array shaped (Z, Y, X)
-        Z: superior-inferior (head->feet)
+      ct_zyx: (Z, Y, X)
+        Z: superior-inferior
         Y: anterior-posterior
         X: left-right
 
-    AP projection integrates along Y, producing image plane (Z, X).
+    AP projection integrates along Y -> image plane (Z, X).
     """
     ct = ct_zyx.astype(np.float32)
-    img = ct.sum(axis=1)          # (Z, X)
+    img = ct.sum(axis=1)  # (Z, X)
     img01 = _normalize01(img)
     img01 = _maybe_invert(img01, invert)
     img01 = _apply_orient(img01, rot_k=rot_k, flip_ud=flip_ud, flip_lr=flip_lr)
@@ -65,15 +72,15 @@ def drr_lat(
     flip_lr: bool = False,
 ) -> np.ndarray:
     """
-    Create a LAT-like DRR from a CT volume.
+    LAT-like DRR from CT volume.
 
     Input:
-      ct_zyx: numpy array shaped (Z, Y, X)
+      ct_zyx: (Z, Y, X)
 
-    LAT projection integrates along X, producing image plane (Z, Y).
+    LAT projection integrates along X -> image plane (Z, Y).
     """
     ct = ct_zyx.astype(np.float32)
-    img = ct.sum(axis=2)          # (Z, Y)
+    img = ct.sum(axis=2)  # (Z, Y)
     img01 = _normalize01(img)
     img01 = _maybe_invert(img01, invert)
     img01 = _apply_orient(img01, rot_k=rot_k, flip_ud=flip_ud, flip_lr=flip_lr)
@@ -90,8 +97,7 @@ def drr_from_ct(
     flip_lr: bool = False,
 ) -> np.ndarray:
     """
-    Convenience wrapper.
-    view: "ap" or "lat"
+    Convenience wrapper: view in {"ap","lat"}.
     """
     v = view.lower().strip()
     if v == "ap":

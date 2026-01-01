@@ -11,7 +11,7 @@ import argparse
 import json
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -35,13 +35,26 @@ def read_ct_sitk(mhd_path: str) -> sitk.Image:
     return sitk.ReadImage(mhd_path)
 
 
-def resample_to_size(img: sitk.Image, out_size_xyz: Tuple[int, int, int]) -> sitk.Image:
+def reorient_to_canonical(img: sitk.Image, orientation: str = "LPS") -> sitk.Image:
     """
-    Resize (resample) to a target voxel grid size (X,Y,Z) while preserving physical extent.
-    No cropping.
+    Force a consistent physical axis convention across all cases
+    so that numpy axes (Z,Y,X) map consistently.
+
+    orientation: one of {"LPS","RAS","RAI","LPI",...} supported by SimpleITK DICOMOrient.
+    LPS is a safe default in medical imaging.
     """
-    in_size = np.array(list(img.GetSize()), dtype=np.float64)         # (X,Y,Z)
-    in_spacing = np.array(list(img.GetSpacing()), dtype=np.float64)   # (sx,sy,sz)
+    f = sitk.DICOMOrientImageFilter()
+    f.SetDesiredCoordinateOrientation(orientation)
+    return f.Execute(img)
+
+
+def resample_to_size_preserve_extent(img: sitk.Image, out_size_xyz: Tuple[int, int, int]) -> sitk.Image:
+    """
+    Resample to target voxel grid size (X,Y,Z) while preserving physical extent.
+    No cropping. Keeps origin/direction.
+    """
+    in_size = np.array(list(img.GetSize()), dtype=np.float64)       # (X,Y,Z)
+    in_spacing = np.array(list(img.GetSpacing()), dtype=np.float64) # (sx,sy,sz)
     out_size = np.array(list(out_size_xyz), dtype=np.int64)
 
     extent = in_size * in_spacing
@@ -82,24 +95,36 @@ def safe_filename(case_id: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selected_json", type=str, default="data/selected_10.json")
+    ap.add_argument("--selected_json", type=str, default="data/selected_200.json")
     ap.add_argument("--out_dir", type=str, required=True)
 
-    # AP sizing
-    ap.add_argument("--ap_size_x", type=int, default=256)
-    ap.add_argument("--ap_size_y", type=int, default=256)
-    ap.add_argument("--ap_size_z", type=int, default=96)
+    # IMPORTANT: cube resample is the safest "correct GT" for AP+LAT
+    ap.add_argument("--size_x", type=int, default=256)
+    ap.add_argument("--size_y", type=int, default=256)
+    ap.add_argument("--size_z", type=int, default=256)
 
-    # LAT sizing
-    ap.add_argument("--lat_size_x", type=int, default=96)
-    ap.add_argument("--lat_size_y", type=int, default=256)
-    ap.add_argument("--lat_size_z", type=int, default=256)
+    # Canonical orientation so axes are consistent across cases
+    ap.add_argument("--canonical_orient", type=str, default="LPS")
 
     ap.add_argument("--hu_min", type=float, default=-1000.0)
     ap.add_argument("--hu_max", type=float, default=400.0)
     ap.add_argument("--val_frac", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--save_ct", action="store_true")
+
+    # Optional: DRR display transforms (keep defaults as "no-op")
+    ap.add_argument("--ap_invert", action="store_true")
+    ap.add_argument("--lat_invert", action="store_true")
+    ap.add_argument("--ap_rot_k", type=int, default=0)
+    ap.add_argument("--lat_rot_k", type=int, default=0)
+    ap.add_argument("--ap_flip_ud", action="store_true")
+    ap.add_argument("--ap_flip_lr", action="store_true")
+    ap.add_argument("--lat_flip_ud", action="store_true")
+    ap.add_argument("--lat_flip_lr", action="store_true")
+
+    # Optional: stop after first written case for debugging
+    ap.add_argument("--debug_one", action="store_true")
+
     args = ap.parse_args()
 
     selected_json = Path(args.selected_json)
@@ -122,7 +147,8 @@ def main():
     skipped = 0
 
     print(f"[prepare_dataset_resize] cases={len(cases)} out={out_dir}")
-    print(f"[prepare_dataset_resize] RESIZE to (X,Y,Z)={target_xyz} hu=({args.hu_min},{args.hu_max})")
+    print(f"[prepare_dataset_resize] canonical_orient={args.canonical_orient}")
+    print(f"[prepare_dataset_resize] RESAMPLE to (X,Y,Z)={target_xyz} hu=({args.hu_min},{args.hu_max})")
 
     for i, c in enumerate(cases, start=1):
         mhd_path = Path(c.mhd_path)
@@ -131,50 +157,74 @@ def main():
             skipped += 1
             continue
 
-        img = read_ct_sitk(str(mhd_path))
-        img_rs = resample_to_size(img, out_size_xyz=target_xyz)
+        try:
+            img = read_ct_sitk(str(mhd_path))
+            img = reorient_to_canonical(img, orientation=args.canonical_orient)
+            img_rs = resample_to_size_preserve_extent(img, out_size_xyz=target_xyz)
 
-        ct_zyx, spacing_zyx = sitk_to_np_zyx(img_rs)  # (Z,Y,X)
-        ct_norm = normalize_ct_hu(ct_zyx, args.hu_min, args.hu_max)
+            ct_zyx, spacing_zyx = sitk_to_np_zyx(img_rs)  # (Z,Y,X)
+            ct_norm = normalize_ct_hu(ct_zyx, args.hu_min, args.hu_max)
 
-        ap_img = drr_ap(ct_norm).astype(np.float32)
-        lat_img = drr_lat(ct_norm).astype(np.float32)
+            ap_img = drr_ap(
+                ct_norm,
+                invert=args.ap_invert,
+                rot_k=args.ap_rot_k,
+                flip_ud=args.ap_flip_ud,
+                flip_lr=args.ap_flip_lr,
+            ).astype(np.float32)
 
-        fn = safe_filename(c.case_id) + ".npz"
-        npz_path = out_npz / fn
+            lat_img = drr_lat(
+                ct_norm,
+                invert=args.lat_invert,
+                rot_k=args.lat_rot_k,
+                flip_ud=args.lat_flip_ud,
+                flip_lr=args.lat_flip_lr,
+            ).astype(np.float32)
 
-        save_kwargs = dict(
-            case_id=c.case_id,
-            mhd_path=str(mhd_path.as_posix()),
-            spacing_zyx=np.array(spacing_zyx, dtype=np.float32),
-            ap=ap_img,
-            lat=lat_img,
-        )
-        if args.save_ct:
-            save_kwargs["ct_zyx"] = ct_norm.astype(np.float16)
+            fn = safe_filename(c.case_id) + ".npz"
+            npz_path = out_npz / fn
 
-        np.savez_compressed(npz_path, **save_kwargs)
-
-        rows.append(
-            dict(
+            save_kwargs = dict(
                 case_id=c.case_id,
-                npz_path=str(npz_path.as_posix()),
                 mhd_path=str(mhd_path.as_posix()),
-                z=int(ct_norm.shape[0]),
-                y=int(ct_norm.shape[1]),
-                x=int(ct_norm.shape[2]),
-                spacing_z=float(spacing_zyx[0]),
-                spacing_y=float(spacing_zyx[1]),
-                spacing_x=float(spacing_zyx[2]),
+                spacing_zyx=np.array(spacing_zyx, dtype=np.float32),
+                ap=ap_img,
+                lat=lat_img,
             )
-        )
+            if args.save_ct:
+                save_kwargs["ct_zyx"] = ct_norm.astype(np.float16)
 
-        written += 1
-        if written % 10 == 0 or i == len(cases):
-            print(f"  wrote {written}/{len(cases)} (seen={i}, skipped={skipped})")
+            np.savez_compressed(npz_path, **save_kwargs)
+
+            rows.append(
+                dict(
+                    case_id=c.case_id,
+                    npz_path=str(npz_path.as_posix()),
+                    mhd_path=str(mhd_path.as_posix()),
+                    z=int(ct_norm.shape[0]),
+                    y=int(ct_norm.shape[1]),
+                    x=int(ct_norm.shape[2]),
+                    spacing_z=float(spacing_zyx[0]),
+                    spacing_y=float(spacing_zyx[1]),
+                    spacing_x=float(spacing_zyx[2]),
+                )
+            )
+
+            written += 1
+            if args.debug_one:
+                print("[prepare_dataset_resize] debug_one=True; stopping after first written case.")
+                break
+
+            if written % 10 == 0 or i == len(cases):
+                print(f"  wrote {written}/{len(cases)} (seen={i}, skipped={skipped})")
+
+        except Exception as e:
+            print(f"[WARN] failed case {c.case_id} ({c.mhd_path}): {e}")
+            skipped += 1
+            continue
 
     if written == 0:
-        raise SystemExit("[ERROR] Wrote 0 cases. selected_200.json paths not valid on this machine.")
+        raise SystemExit("[ERROR] Wrote 0 cases. selected paths not valid or all cases failed.")
 
     df = pd.DataFrame(rows)
     manifest_csv = out_dir / "manifest.csv"
