@@ -5,9 +5,8 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 
-# Import methods from geo_smoke for reorientation and visualization
-from src.geo_smoke import backproject_parallel_beam  # For future use in backprojection
-from src.vis.drr import drr_ap, drr_lat  # Ensure drr_ap and drr_lat are used for DRR generation
+# Import methods for DRR generation from the appropriate module
+from src.vis.drr import drr_ap, drr_lat  # Use drr_ap and drr_lat for DRR generation
 
 # Normalize image to range [0,1]
 def normalize01(x: np.ndarray) -> np.ndarray:

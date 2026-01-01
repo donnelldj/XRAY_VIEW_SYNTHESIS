@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import numpy as np
 
 
@@ -9,24 +8,40 @@ def backproject_parallel_beam(
     axis: int = 0,
 ) -> np.ndarray:
     """
-    Fast, simple backprojection for our current DRR definition.
+    Fast backprojection consistent with our SIMPLE DRR definition (sum along an axis).
 
-    Your current DRR AP is basically: ap = sum(volume, axis=0) -> (Y,X)
-    So the corresponding "backprojection" (Eq.1 conceptually) is to
-    replicate the AP image along the summed axis to create a 3D volume.
+    Supported conventions:
+
+    (A) Old convention:
+        ap_img: (Y, X)
+        out_zyx: (Z, Y, X)
+        axis=1 means AP was created by sum(volume, axis=1) over Z
+        -> backproject replicates ap_img along Z
+
+    (B) New convention (your current pipeline):
+        ap_img: (Z, X)
+        out_zyx: (Z, Y, X)
+        axis=1 means AP was created by sum(volume, axis=1) over Y
+        -> backproject replicates ap_img along Y
 
     Returns:
-      V_bp: (Z,Y,X) float32
+      V_bp: (Z, Y, X) float32
     """
-    ap_img = ap_img.astype(np.float32)
-    z, y, x = out_zyx
+    ap_img = np.asarray(ap_img, dtype=np.float32)
+    z, y, x = map(int, out_zyx)
 
-    if ap_img.shape != (y, x):
-        # If someone changes DRR size later, fail loudly.
-        raise ValueError(f"Expected ap_img shape (Y,X)=({y},{x}), got {ap_img.shape}")
+    if axis == 0:
+        # ap_img expected (Y,X)
+        if ap_img.shape != (y, x):
+            raise ValueError(f"[axis=0] Expected ap_img (Y,X)=({y},{x}), got {ap_img.shape}")
+        v = np.repeat(ap_img[None, :, :], repeats=z, axis=0)  # (Z,Y,X)
+        return v.astype(np.float32)
 
-    if axis != 0:
-        raise NotImplementedError("This helper assumes AP sums along Z (axis=0).")
+    if axis == 1:
+        # ap_img expected (Z,X)
+        if ap_img.shape != (z, x):
+            raise ValueError(f"[axis=1] Expected ap_img (Z,X)=({z},{x}), got {ap_img.shape}")
+        v = np.repeat(ap_img[:, None, :], repeats=y, axis=1)  # (Z,Y,X)
+        return v.astype(np.float32)
 
-    v = np.repeat(ap_img[None, :, :], repeats=z, axis=0)  # (Z,Y,X)
-    return v.astype(np.float32)
+    raise NotImplementedError("Only axis=0 (smear along Z) and axis=1 (smear along Y) are supported.")
