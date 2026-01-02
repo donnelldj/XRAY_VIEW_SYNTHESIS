@@ -36,6 +36,9 @@ except Exception:
 # ------------------------- utils -------------------------
 
 def collate_samples(batch):
+    """
+    Convert List[Sample] -> dict of batched tensors.
+    """
     ap = torch.stack([b.ap_zx for b in batch], dim=0)      # (B,1,Z,X)
     lat = torch.stack([b.lat_zy for b in batch], dim=0)    # (B,1,Z,Y)
     ct = None if batch[0].ct_zyx is None else torch.stack([b.ct_zyx for b in batch], dim=0)  # (B,1,Z,Y,X)
@@ -60,6 +63,9 @@ def psnr(pred: np.ndarray, gt: np.ndarray, data_range: float = 1.0) -> float:
 
 
 def ssim_simple(pred: np.ndarray, gt: np.ndarray, data_range: float = 1.0) -> float:
+    """
+    Lightweight SSIM (single-scale, global stats). Not a perfect SSIM, but stable + dependency-free.
+    """
     pred = pred.astype(np.float32)
     gt = gt.astype(np.float32)
 
@@ -89,6 +95,9 @@ def resolve_path(p: str) -> Path:
 
 
 def load_npz_paths_from_csv(csv_path: str) -> List[str]:
+    """
+    Robust: accepts either a single column CSV of paths, or a header row containing 'npz_path'.
+    """
     paths: List[str] = []
     with open(str(csv_path), "r", newline="") as f:
         reader = csv.reader(f)
@@ -145,6 +154,9 @@ def reorient_to_canonical(img: "sitk.Image", orientation: str = "LPS") -> "sitk.
 
 
 def resample_to_size_preserve_extent(img: "sitk.Image", out_size_xyz: Tuple[int, int, int]) -> "sitk.Image":
+    """
+    Resample to target voxel grid size (X,Y,Z) while preserving physical extent.
+    """
     in_size = np.array(list(img.GetSize()), dtype=np.float64)         # (X,Y,Z)
     in_spacing = np.array(list(img.GetSpacing()), dtype=np.float64)   # (sx,sy,sz)
     out_size = np.array(list(out_size_xyz), dtype=np.int64)
@@ -169,6 +181,10 @@ def read_ct_preprocessed_zyx(
     hu_clip: Tuple[float, float] = (-1000.0, 400.0),
     canonical_orient: str = "LPS",
 ) -> np.ndarray:
+    """
+    Exactly match prepare_dataset_resize.py:
+      Read -> DICOMOrient(LPS) -> resample to (X,Y,Z)=target -> GetArray(Z,Y,X) -> HU clip -> normalize 0..1
+    """
     if not _HAS_SITK:
         raise RuntimeError("SimpleITK is required. Install: pip install SimpleITK")
 
@@ -190,13 +206,17 @@ def read_ct_preprocessed_zyx(
 
 @dataclass
 class Sample:
-    ap_zx: torch.Tensor
-    lat_zy: torch.Tensor
-    ct_zyx: Optional[torch.Tensor]
+    ap_zx: torch.Tensor               # (1,Z,X)
+    lat_zy: torch.Tensor              # (1,Z,Y)
+    ct_zyx: Optional[torch.Tensor]    # (1,Z,Y,X) or None
     case_id: str
 
 
 class NpzAPLatCTDataset(Dataset):
+    """
+    NPZ keys: case_id, mhd_path, spacing_zyx, ap (Z,X), lat (Z,Y)
+    CT is read from mhd_path (train-time supervision). Inference uses only AP.
+    """
     def __init__(
         self,
         npz_paths: List[str],
@@ -264,6 +284,11 @@ class ConvBlock3D(nn.Module):
 
 
 class UNet3D(nn.Module):
+    """
+    Small 3D UNet operating in latent space (e.g., 64^3).
+    Input:  (B,1,Zl,Yl,Xl)   (backprojected+pooled)
+    Output: (B,1,Zl,Yl,Xl)   (CT latent)
+    """
     def __init__(self, base: int = 16):
         super().__init__()
         self.enc1 = ConvBlock3D(1, base)
@@ -295,70 +320,12 @@ class UNet3D(nn.Module):
         return self.out(d1)
 
 
-class LearnedDecoder3D(nn.Module):
-    """
-    Learned upsampler from latent CT (B,1,Zl,Yl,Xl) -> full CT (B,1,Z,Y,X).
-    Uses log2(latent_down) stages of ConvTranspose3d + ConvBlock3D.
-    """
-    def __init__(self, latent_down: int, base: int = 16):
-        super().__init__()
-        if latent_down < 1:
-            raise ValueError("latent_down must be >= 1")
-        if latent_down == 1:
-            self.stages = 0
-        else:
-            stages = int(round(math.log2(latent_down)))
-            if (2 ** stages) != latent_down:
-                raise ValueError(f"latent_down must be a power of 2 for learned decoder, got {latent_down}")
-            self.stages = stages
-
-        # start a bit wider than 1 channel so decoder can add detail
-        ch = max(base * 2, 16)
-        self.in_conv = nn.Sequential(
-            nn.Conv3d(1, ch, 3, padding=1),
-            nn.GroupNorm(num_groups=min(8, ch), num_channels=ch),
-            nn.SiLU(),
-            nn.Conv3d(ch, ch, 3, padding=1),
-            nn.GroupNorm(num_groups=min(8, ch), num_channels=ch),
-            nn.SiLU(),
-        )
-
-        ups = []
-        for _ in range(self.stages):
-            out_ch = max(base, ch // 2)
-            ups.append(nn.ConvTranspose3d(ch, out_ch, kernel_size=2, stride=2))
-            ups.append(ConvBlock3D(out_ch, out_ch))
-            ch = out_ch
-
-        self.ups = nn.Sequential(*ups) if ups else nn.Identity()
-        self.out = nn.Conv3d(ch, 1, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.in_conv(x)
-        x = self.ups(x)
-        x = self.out(x)
-        return x
-
-
-class AP2LatNet(nn.Module):
-    """
-    Wrapper so checkpoint contains both UNet + learned decoder.
-    """
-    def __init__(self, base: int, latent_down: int):
-        super().__init__()
-        self.latent_down = int(latent_down)
-        self.unet = UNet3D(base=base)
-        self.decoder = LearnedDecoder3D(latent_down=self.latent_down, base=base)
-
-    def forward(self, bp_lat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        ct_lat_pred = self.unet(bp_lat)        # (B,1,Zl,Yl,Xl)
-        ct_pred = self.decoder(ct_lat_pred)    # (B,1,Z,Y,X)
-        return ct_lat_pred, ct_pred
-
-
 # ------------------------- physics-ish ops -------------------------
 
 def backproject_ap_to_volume(ap_zx: torch.Tensor, out_y: int) -> torch.Tensor:
+    """
+    AP is (B,1,Z,X). Backproject -> (B,1,Z,Y,X) by repeating across Y.
+    """
     ap_zyx = ap_zx.unsqueeze(3)               # (B,1,Z,1,X)
     vol = ap_zyx.repeat(1, 1, 1, out_y, 1)    # (B,1,Z,Y,X)
     return vol
@@ -372,6 +339,11 @@ def forward_project_ct_to_lat(
     flip_ud: bool = False,
     flip_lr: bool = False,
 ) -> torch.Tensor:
+    """
+    CT:  (B,1,Z,Y,X)
+    LAT: (B,1,Z,Y) = sum over X, then normalize01, then optional invert/rot/flip
+    (matches src/vis/drr.py behavior)
+    """
     lat = ct_zyx.sum(dim=-1)  # (B,1,Z,Y)
 
     mn = lat.amin(dim=(-2, -1), keepdim=True)
@@ -383,16 +355,19 @@ def forward_project_ct_to_lat(
 
     k = int(rot_k) % 4
     if k:
-        lat = torch.rot90(lat, k=k, dims=(-2, -1))
+        lat = torch.rot90(lat, k=k, dims=(-2, -1))  # rotate in (Z,Y) plane
     if flip_ud:
-        lat = torch.flip(lat, dims=(-2,))
+        lat = torch.flip(lat, dims=(-2,))           # flip Z
     if flip_lr:
-        lat = torch.flip(lat, dims=(-1,))
+        lat = torch.flip(lat, dims=(-1,))           # flip Y
 
     return lat
 
 
 def avg_pool_latent(vol_zyx: torch.Tensor, down: int) -> torch.Tensor:
+    """
+    Downsample (B,1,Z,Y,X) -> (B,1,Zl,Yl,Xl)
+    """
     if down == 1:
         return vol_zyx
     return F.avg_pool3d(vol_zyx, kernel_size=down, stride=down)
@@ -422,26 +397,27 @@ def train_one_epoch(
     amp_enabled = bool(amp and device.type == "cuda")
     scaler = torch.amp.GradScaler(enabled=amp_enabled)
 
-    autocast_device = "cuda" if device.type == "cuda" else "cpu"
     t0 = time.time()
 
     for step, batch in enumerate(loader, start=1):
-        ap = batch["ap_zx"].to(device)
-        lat_gt = batch["lat_zy"].to(device)
+        ap = batch["ap_zx"].to(device)         # (B,1,Z,X)
+        lat_gt = batch["lat_zy"].to(device)    # (B,1,Z,Y)
         ct = batch["ct_zyx"]
         if ct is None:
             raise RuntimeError("CT is required for latent supervision, but dataset returned ct=None.")
-        ct = ct.to(device)
+        ct = ct.to(device)                     # (B,1,Z,Y,X)
 
         B, _, Z, Y, X = ct.shape
-        bp = backproject_ap_to_volume(ap, out_y=Y)     # (B,1,Z,Y,X)
 
-        bp_lat = avg_pool_latent(bp, latent_down)      # (B,1,Zl,Yl,Xl)
-        ct_lat_gt = avg_pool_latent(ct, latent_down)   # (B,1,Zl,Yl,Xl)
+        bp = backproject_ap_to_volume(ap, out_y=Y)  # (B,1,Z,Y,X)
+        bp_lat = avg_pool_latent(bp, latent_down)   # (B,1,Zl,Yl,Xl)
+        ct_lat_gt = avg_pool_latent(ct, latent_down)
 
-        with torch.autocast(device_type=autocast_device, enabled=amp_enabled):
-            ct_lat_pred, ct_pred = model(bp_lat)
+        with torch.autocast(device_type="cuda", enabled=amp_enabled):
+            ct_lat_pred = model(bp_lat)
             loss_latent = F.mse_loss(ct_lat_pred, ct_lat_gt)
+
+            ct_pred = F.interpolate(ct_lat_pred, scale_factor=latent_down, mode="trilinear", align_corners=False)
 
             lat_pred = forward_project_ct_to_lat(
                 ct_pred,
@@ -450,8 +426,8 @@ def train_one_epoch(
                 flip_ud=flip_ud,
                 flip_lr=flip_lr,
             )
-            loss_lat = F.mse_loss(lat_pred, lat_gt)
 
+            loss_lat = F.mse_loss(lat_pred, lat_gt)
             loss = w_latent * loss_latent + w_lat * loss_lat
 
         optim.zero_grad(set_to_none=True)
@@ -500,10 +476,12 @@ def eval_and_save_examples(
         case_id = batch["case_id"][0]
 
         _, _, _, Y, _ = ct.shape
+
         bp = backproject_ap_to_volume(ap, out_y=Y)
         bp_lat = avg_pool_latent(bp, latent_down)
 
-        _, ct_pred = model(bp_lat)
+        ct_lat_pred = model(bp_lat)
+        ct_pred = F.interpolate(ct_lat_pred, scale_factor=latent_down, mode="trilinear", align_corners=False)
 
         lat_pred = forward_project_ct_to_lat(
             ct_pred,
@@ -542,23 +520,19 @@ def eval_and_save_examples(
     return summary
 
 
-def _is_pow2(x: int) -> bool:
-    return x > 0 and (x & (x - 1)) == 0
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_csv", type=str, required=True)
     ap.add_argument("--val_csv", type=str, required=True)
     ap.add_argument("--out_dir", type=str, required=True)
 
-    # Match NPZ LAT orientation transforms
+    # Match NPZ LAT orientation transforms (drr.py)
     ap.add_argument("--lat_invert", action="store_true")
     ap.add_argument("--lat_rot_k", type=int, default=0)
     ap.add_argument("--lat_flip_ud", action="store_true")
     ap.add_argument("--lat_flip_lr", action="store_true")
 
-    # Match CT preprocessing
+    # Match CT preprocessing (prepare_dataset_resize.py)
     ap.add_argument("--canonical_orient", type=str, default="LPS")
     ap.add_argument("--hu_min", type=float, default=-1000.0)
     ap.add_argument("--hu_max", type=float, default=400.0)
@@ -571,10 +545,10 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--seed", type=int, default=123)
 
-    ap.add_argument("--latent_down", type=int, default=4, help="Downsample factor for CT latent (256 -> 128 if 2, 64 if 4).")
+    ap.add_argument("--latent_down", type=int, default=4, help="Downsample factor for CT latent (256 -> 64 if 4).")
     ap.add_argument("--base", type=int, default=16, help="UNet base channels.")
-    ap.add_argument("--w_latent", type=float, default=0.1)
-    ap.add_argument("--w_lat", type=float, default=1.0)
+    ap.add_argument("--w_latent", type=float, default=1.0)
+    ap.add_argument("--w_lat", type=float, default=0.1)
 
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--amp", action="store_true", help="Use mixed precision on CUDA.")
@@ -583,11 +557,6 @@ def main():
     ap.add_argument("--log_every", type=int, default=50)
 
     args = ap.parse_args()
-
-    if not _is_pow2(int(args.latent_down)):
-        raise SystemExit(f"[ERROR] --latent_down must be a power of 2 (1,2,4,8,...) got {args.latent_down}")
-    if (256 % int(args.latent_down)) != 0:
-        raise SystemExit(f"[ERROR] --latent_down must divide 256 cleanly. got {args.latent_down}")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -638,29 +607,18 @@ def main():
     dl_train = DataLoader(ds_train, batch_size=args.batch, shuffle=True, num_workers=0, collate_fn=collate_samples)
     dl_val = DataLoader(ds_val, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_samples)
 
-    model = AP2LatNet(base=args.base, latent_down=args.latent_down).to(device)
+    model = UNet3D(base=args.base).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     ckpt_path = out_dir / "checkpoint.pt"
 
-    def _load_state(path: str):
-        ck = torch.load(path, map_location="cpu")
-        sd = ck.get("model", ck)
-        missing, unexpected = model.load_state_dict(sd, strict=False)
-        print(f"[load] loaded: {path}")
-        if missing or unexpected:
-            print("[load] WARNING: checkpoint mismatch (architecture changed?)")
-            if missing:
-                print(f"  missing keys: {missing[:10]}{' ...' if len(missing)>10 else ''}")
-            if unexpected:
-                print(f"  unexpected keys: {unexpected[:10]}{' ...' if len(unexpected)>10 else ''}")
-            print("  -> If you changed latent_down/decoder, delete checkpoint.pt or use a new out_dir.")
-
     if args.ckpt:
-        _load_state(args.ckpt)
-        print("[eval] using provided checkpoint; skipping training.")
+        ck = torch.load(args.ckpt, map_location="cpu")
+        model.load_state_dict(ck["model"])
+        print(f"[eval] loaded checkpoint: {args.ckpt}")
     elif ckpt_path.exists():
-        _load_state(str(ckpt_path))
+        ck = torch.load(str(ckpt_path), map_location="cpu")
+        model.load_state_dict(ck["model"])
         print(f"[resume] loaded checkpoint: {ckpt_path}")
     else:
         print(f"[train] epochs={args.epochs} batch={args.batch} lr={args.lr} latent_down={args.latent_down} w_latent={args.w_latent} w_lat={args.w_lat}")
