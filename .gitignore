@@ -50,7 +50,7 @@ data/drp_pairs_debug/
 
 
 # --- Training outputs ---
-results/
+
 logs/
 *.pt
 *.pth

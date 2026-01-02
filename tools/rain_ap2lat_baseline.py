@@ -3,8 +3,7 @@
 # AP -> BP volume -> 3D UNet -> CT_pred -> forward-project -> Lat_pred
 # Loss = w_ct*MSE(CT_pred, CT_gt) + w_lat*MSE(Lat_pred, Lat_gt)
 #git status
-git commit -m "Ignore configs/docs and prune runs + drp_pairs artifacts"
-git push
+
 import sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
