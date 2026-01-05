@@ -128,31 +128,32 @@ pip install kagglehub[pandas-datasets]
 To download and place LUNA16 automatically run:
 ```bash
 python download_luna16_and_place.py
-
+'''
 
 or 
 
 
-python
+'''python
 import kagglehub
 dataset_path = kagglehub.dataset_download("avc0706/luna16")
 print("Downloaded to:", dataset_path)
+'''
 
 &
 
 Ensure the dataset is under:
 
-xray_synth/data/luna16/
-
+'''xray_synth/data/luna16/
+'''
 
 ---
 
 ## Streamlit Exporter (Generate Training Triplets)
 
 Run:
-powershell
+'''powershell
 streamlit run xray_synth\app.py
-
+'''
 
 Use the sidebar to configure HU range, export size, and click **Execute Randomized Export**.
 
@@ -169,7 +170,7 @@ training_triplets/
 
 ## Train + Evaluate
 
-powershell
+'''powershell
 python xray_synth/tools/run_ap_to_lat.py `
   --train_csv training_triplets/train.csv `
   --val_csv   training_triplets/val.csv `
@@ -178,7 +179,7 @@ python xray_synth/tools/run_ap_to_lat.py `
   --latent_down 4 `
   --device cuda --amp `
   --num_examples 10
-
+'''
 
 ---
 
@@ -191,7 +192,7 @@ python xray_synth/tools/run_ap_to_lat.py `
 
 ---
 
-'''
+
 
 ## Scope
 
