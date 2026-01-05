@@ -57,8 +57,8 @@ To ensure consistency, the forward projection used during training and evaluatio
 
 Projection/orientation logic lives in:
 
-```xray_synth/physics/projectors.py
-```
+xray_synth/physics/projectors.py
+
 
 ---
 
@@ -143,8 +143,8 @@ print("Downloaded to:", dataset_path)
 
 Ensure the dataset is under:
 
-```xray_synth/data/luna16/
-```
+xray_synth/data/luna16/
+
 
 ---
 
