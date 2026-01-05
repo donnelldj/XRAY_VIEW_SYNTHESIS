@@ -2,7 +2,7 @@
 #
 # Run inference on the test set, save PNG triplets:
 #   {idx:03d}_ap.png, {idx:03d}_lat_pred.png, {idx:03d}_lat_gt.png
-# and write metrics.json with PSNR / SSIM.
+# and write metrics.json with PSNR and SSIM.
 
 import os
 import json
