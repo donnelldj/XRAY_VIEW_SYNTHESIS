@@ -1,5 +1,5 @@
 # X-Ray View Synthesis
-**AP → LAT_pred**
+**AP -> BP volume -> 3D UNet -> Pred Lat**
 
 This repository implements an end-to-end baseline for synthesizing a lateral (LAT, 90°) X-ray view from a single anteroposterior (AP, 0°) view.
 
