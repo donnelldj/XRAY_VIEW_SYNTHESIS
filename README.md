@@ -44,21 +44,21 @@ Both quantitative metrics and qualitative visualizations are produced.
 Ground-truth projections are defined by the Streamlit exporter using the following conventions:
 
 ### AP projection
-'''python
+```python
 ap = flipud(mean(ct_norm, axis=Y))  # shape (Z, X)
-'''
+```
 
 ### LAT projection
-'''python
+```python
 lat = flipud(mean(ct_norm, axis=X))  # shape (Z, Y)
-'''
+```
 
 To ensure consistency, the forward projection used during training and evaluation applies the same operations in the same order. In particular, the flip along the Z axis is mandatory for matching the exported ground truth.
 
 Projection/orientation logic lives in:
 
-'''xray_synth/physics/projectors.py
-'''
+```xray_synth/physics/projectors.py
+```
 
 ---
 
@@ -92,27 +92,27 @@ If not present, the CT volume is loaded from `mhd_path`, resampled to a fixed gr
 ## Quickstart (Windows / PowerShell)
 
 ### 1) Clone
-'''powershell
+```powershell
 git clone https://github.com/donnelldj/XRAY_VIEW_SYNTHESIS.git
 cd XRAY_VIEW_SYNTHESIS
-'''
+```
 
 
 ### 2) Create + activate virtual environment
-'''powershell
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-'''
+```
 
 ### 3) Install dependencies
-'''powershell
+```powershell
 pip install -r requirements.txt
-'''
+```
 
 ### 4) Set PYTHONPATH
-'''powershell
+```powershell
 $env:PYTHONPATH="."
-'''
+```
 
 ---
 
@@ -128,32 +128,32 @@ pip install kagglehub[pandas-datasets]
 To download and place LUNA16 automatically run:
 ```bash
 python download_luna16_and_place.py
-'''
+```
 
 or 
 
 
-'''python
+```python
 import kagglehub
 dataset_path = kagglehub.dataset_download("avc0706/luna16")
 print("Downloaded to:", dataset_path)
-'''
+```
 
 &
 
 Ensure the dataset is under:
 
-'''xray_synth/data/luna16/
-'''
+```xray_synth/data/luna16/
+```
 
 ---
 
 ## Streamlit Exporter (Generate Training Triplets)
 
 Run:
-'''powershell
+```powershell
 streamlit run xray_synth\app.py
-'''
+```
 
 Use the sidebar to configure HU range, export size, and click **Execute Randomized Export**.
 
@@ -170,7 +170,7 @@ training_triplets/
 
 ## Train + Evaluate
 
-'''powershell
+```powershell
 python xray_synth/tools/run_ap_to_lat.py `
   --train_csv training_triplets/train.csv `
   --val_csv   training_triplets/val.csv `
@@ -179,7 +179,7 @@ python xray_synth/tools/run_ap_to_lat.py `
   --latent_down 4 `
   --device cuda --amp `
   --num_examples 10
-'''
+```
 
 ---
 
