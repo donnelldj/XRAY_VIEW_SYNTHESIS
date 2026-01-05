@@ -1,5 +1,5 @@
 # X-Ray View Synthesis
-**AP → backprojection volume → 3D U-Net → CT_pred → forward-project → LAT_pred**
+**AP → LAT_pred**
 
 This repository implements an end-to-end baseline for synthesizing a lateral (LAT, 90°) X-ray view from a single anteroposterior (AP, 0°) view.
 
@@ -11,8 +11,8 @@ The pipeline is designed to mirror the data generation logic used by the include
 
 Given a single AP projection of a CT volume, the goal is to predict the corresponding LAT projection.
 
-- Reconstruct a coarse 3D proxy volume from the AP view
-- Predict a CT-like latent representation using supervised learning
+- Reconstruct a 3D proxy volume from the AP view
+- Predict a latent representation using supervised learning
 - Forward-project the predicted volume to obtain the LAT view
 
 Both quantitative metrics and qualitative visualizations are produced.
@@ -28,10 +28,10 @@ Both quantitative metrics and qualitative visualizations are produced.
    The AP image is expanded into a 3D volume by replication along the Y axis, producing a tensor of shape `(Z, Y, X)`.
 
 3. **Latent CT Prediction**  
-   A compact 3D U-Net operates on a downsampled (latent) version of the backprojected volume to predict a CT-like latent representation. Supervision is provided by CT data.
+   A compact 3D U-Net operates on a downsampled (latent) version of the backprojected volume to predict a latent representation. Supervision is provided by CT data.
 
 4. **Forward Projection**  
-   The predicted CT volume is projected into a LAT view by averaging along the X axis, followed by a fixed orientation transform.
+   The predicted volume is projected into a LAT view by averaging along the X axis, followed by a fixed orientation transform.
 
 5. **Evaluation and Visualization**  
    - **Quantitative:** PSNR and SSIM  

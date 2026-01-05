@@ -27,7 +27,7 @@ class DRRPairDataset(Dataset):
       - lat: (H, W) float32
       - case_id: str
       - mhd_path: str
-      - spacing_zyx: (3,)
+      - spacing_zyx: (3)
     """
 
     def __init__(
