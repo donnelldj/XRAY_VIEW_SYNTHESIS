@@ -60,7 +60,7 @@ def show_one(npz_path: str, save_dir: Path):
 
 
 def main():
-    npzs = glob.glob("runs/final_runs_1/data/drr_pairs_fixed/npz/subset0__1.3.6.1.4.1.14519.5.2.1.6279.6001.105756658031515062000744821260.npz")
+    npzs = glob.glob("drr_pairs1/npz/subset0__1.3.6.1.4.1.14519.5.2.1.6279.6001.105756658031515062000744821260.npz")
     if not npzs:
         raise SystemExit("No npz files found. Check your out_dir.")
 
@@ -68,7 +68,7 @@ def main():
     print("showing:", p)
 
     case_id = Path(p).stem
-    out_dir = Path("runs/debug_viz") / case_id
+    out_dir = Path("drr_pairs1/debug_viz") / case_id
 
     show_one(p, out_dir)
     print("saved debug images to:", out_dir.resolve())

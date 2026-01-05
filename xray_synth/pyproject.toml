@@ -1,0 +1,19 @@
+
+## `pyproject.toml` (simple)
+
+```toml
+[project]
+name = "xray-synth"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "torch",
+  "Pillow",
+]
+
+[project.optional-dependencies]
+sitk = ["SimpleITK"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,3 @@
+count=20
+psnr_mean=19.2792  psnr_std=2.3347
+ssim_mean=0.8586  ssim_std=0.0899

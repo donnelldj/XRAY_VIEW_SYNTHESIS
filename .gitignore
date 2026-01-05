@@ -9,6 +9,10 @@ __pycache__/
 venv/
 env/
 
+# --- Streamlit ---
+.streamlit/
+
+
 # --- Jupyter ---
 .ipynb_checkpoints/
 
@@ -18,9 +22,7 @@ Thumbs.db
 
 # --- Data & generated artifacts ---
 data/luna16/
-data/drr_pairs/
-data/**/*.npz
-data/**/*.npy
+xray_synth/data/luna16
 data/**/*.nii
 data/**/*.nii.gz
 data/**/*.mhd
@@ -30,25 +32,11 @@ data/**/*.raw
 configs/
 docs/
 
-# --- Runs: ignore everything except a few keepers ---
-runs/*
-!runs/
-!runs/runs_final/
-!runs/runs_final/**
-!runs/final_runs_1/
-!runs/final_runs_1/**
-!runs/debug_viz/
-!runs/debug_viz/**
-
-# (optional safety if you literally have a folder named "final runs" with a space)
-!runs/final runs/
-!runs/final runs/**
-
-# --- Extra datasets you want ignored ---
-data/drp_pairs/
-data/drp_pairs_debug/
 
 
+# --- Generated datasets ---
+training_triplets/
+*.npz
 # --- Training outputs ---
 
 logs/
